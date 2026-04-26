@@ -388,16 +388,6 @@ void Compute_AngleAxisError(const Mat4x4_t *T_current,
     error[2] = T_desired->data[14] - T_current->data[14];  // dz
     
     // Orientation error (simplified - angle difference)
-    // Extract rotation matrices
-    float R_curr[9], R_des[9];
-    R_curr[0] = T_current->data[0]; R_curr[3] = T_current->data[4]; R_curr[6] = T_current->data[8];
-    R_curr[1] = T_current->data[1]; R_curr[4] = T_current->data[5]; R_curr[7] = T_current->data[9];
-    R_curr[2] = T_current->data[2]; R_curr[5] = T_current->data[6]; R_curr[8] = T_current->data[10];
-    
-    R_des[0] = T_desired->data[0]; R_des[3] = T_desired->data[4]; R_des[6] = T_desired->data[8];
-    R_des[1] = T_desired->data[1]; R_des[4] = T_desired->data[5]; R_des[7] = T_desired->data[9];
-    R_des[2] = T_desired->data[2]; R_des[5] = T_desired->data[6]; R_des[8] = T_desired->data[10];
-    
     // Simplified orientation error (for 4-DOF, focus on position)
     error[3] = 0.0f;  // Roll error (not controlled in 4-DOF)
     error[4] = 0.0f;  // Pitch error
