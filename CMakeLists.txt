@@ -28,6 +28,26 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
+# Option to enable CMSIS-DSP optimizations (requires CMSIS-DSP sources present)
+option(USE_CMSIS_DSP "Enable CMSIS-DSP optimizations" OFF)
+if(USE_CMSIS_DSP)
+    message(STATUS "CMSIS-DSP support enabled")
+    # Expect CMSIS-DSP to be located under Drivers/CMSIS/DSP
+    set(CMSIS_DSP_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/Drivers/CMSIS/DSP/Include)
+    set(CMSIS_DSP_SRC_DIR ${CMAKE_SOURCE_DIR}/Drivers/CMSIS/DSP/Source)
+    if(EXISTS ${CMSIS_DSP_INCLUDE_DIR} AND EXISTS ${CMSIS_DSP_SRC_DIR})
+        target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMSIS_DSP_INCLUDE_DIR})
+        # Add all DSP source files (C) under the source tree
+        file(GLOB_RECURSE CMSIS_DSP_SOURCES ${CMSIS_DSP_SRC_DIR}/*.c)
+        if(CMSIS_DSP_SOURCES)
+            target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${CMSIS_DSP_SOURCES})
+        endif()
+        target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE USE_CMSIS_DSP ARM_MATH_CM4)
+    else()
+        message(FATAL_ERROR "USE_CMSIS_DSP requested but Drivers/CMSIS/DSP not found. Please add CMSIS-DSP sources to Drivers/CMSIS/DSP or disable USE_CMSIS_DSP.")
+    endif()
+endif()
+
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
