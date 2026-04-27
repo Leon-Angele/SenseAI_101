@@ -40,8 +40,8 @@ extern "C" {
 #define SERVO_POS_CENTER        2048
 
 /* Degrees per servo unit (for degree-mode servos) */
-/* Full range: 0-4095 corresponds to ~240 degrees */
-#define SERVO_UNITS_PER_DEGREE  (4096.0f / 240.0f)  // ~17.067
+/* Full range: 0-4095 corresponds to ~360 degrees */
+#define SERVO_UNITS_PER_DEGREE  (4096.0f / 360.0f)  // ~11.377
 
 /* Linear servo scaling (for gripper) */
 #define SERVO_LINEAR_MIN_PERCENT    0.0f

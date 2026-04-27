@@ -33,18 +33,17 @@ static const ServoCalib_t servo_calibration[NUM_SERVOS] = {
     // ID 1: Shoulder Pan (Base rotation, center: ~2250)
     { .homing_offset = 250,  .range_min = 1100, .range_max = 3569, .calib_mode = CALIB_MODE_DEGREE },
     
-    // ID 2: Shoulder Lift (Horizontal q1=0 → pos=3100)
-    // Calculation: 3100 = 2048 + 0 + offset → offset = 1052
-    // Note: Smaller servo value (e.g., 2100) = upward motion = positive math angle (after inversion)
-    { .homing_offset = 1052, .range_min = 871,  .range_max = 3341, .calib_mode = CALIB_MODE_DEGREE },
+    // ID 2: Shoulder Lift (Horizontal q1=0 -> pos=1200)
+    // Calculation: 1200 = 2048 + (-848)
+    { .homing_offset = -848, .range_min = 871,  .range_max = 3341, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
     
-    // ID 3: Elbow Flex (Straight q2=0 → pos=1000)
-    // Calculation: 1000 = 2048 + 0 + offset → offset = -1048
-    { .homing_offset = -1048, .range_min = 815,  .range_max = 3024, .calib_mode = CALIB_MODE_DEGREE },
+    // ID 3: Elbow Flex (Straight q2=0 -> pos=1000)
+    // Calculation: 1000 = 2048 + (-1048)
+    { .homing_offset = -1048, .range_min = 815,  .range_max = 3024, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
     
-    // ID 4: Wrist Pitch (Horizontal q3=0 → pos=2000)
-    // Calculation: 2000 = 2048 + 0 + offset → offset = -48
-    { .homing_offset = -48,  .range_min = 774,  .range_max = 3141, .calib_mode = CALIB_MODE_DEGREE },
+    // ID 4: Wrist Pitch (Straight q3=0 -> pos=2000)
+    // Calculation: 2000 = 2048 + (-48)
+    { .homing_offset = -48,  .range_min = 774,  .range_max = 3141, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
     
     // ID 5: Wrist Roll (Center, unchanged)
     { .homing_offset = -1,   .range_min = 0,    .range_max = 4095, .calib_mode = CALIB_MODE_DEGREE },
@@ -177,9 +176,8 @@ void ServoMapping_IKToServoPositions(const JointAngles_t *ik_angles,
     full_angles.angles[5] = gripper_percent / 100.0f;  // Gripper (as fraction)
     
     // Apply angle inversions as per Python reference
-    // Python code inverts joints [0, 1, 4] before sending to servos
+    // Keep only joints 0 and 4 inverted (base and wrist roll)
     full_angles.angles[0] = -full_angles.angles[0];
-    full_angles.angles[1] = -full_angles.angles[1];
     full_angles.angles[4] = -full_angles.angles[4];
     
     // Convert each angle to servo position
@@ -205,7 +203,6 @@ void ServoMapping_ServoPositionsToAngles(const ServoPositions_t *servo_pos,
     
     // Remove angle inversions (reverse the inversion applied in IKToServoPositions)
     arm_angles->angles[0] = -arm_angles->angles[0];
-    arm_angles->angles[1] = -arm_angles->angles[1];
     arm_angles->angles[4] = -arm_angles->angles[4];
 }
 
@@ -218,9 +215,8 @@ void ServoMapping_ApplyAngleInversions(FullArmAngles_t *angles)
         return;
     }
     
-    // Invert joints 0, 1, 4 as per Python reference
+    // Invert joints 0 and 4 (base and wrist roll)
     angles->angles[0] = -angles->angles[0];
-    angles->angles[1] = -angles->angles[1];
     angles->angles[4] = -angles->angles[4];
 }
 
@@ -235,7 +231,6 @@ void ServoMapping_RemoveAngleInversions(FullArmAngles_t *angles)
     
     // Remove inversion (same operation as apply since it's negation)
     angles->angles[0] = -angles->angles[0];
-    angles->angles[1] = -angles->angles[1];
     angles->angles[4] = -angles->angles[4];
 }
 

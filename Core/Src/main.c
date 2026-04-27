@@ -212,23 +212,24 @@ int main(void)
       CartesianPose_t target_pose;
       switch (command_sequence) {
         case 0:
-          target_pose.x = 0.20f; target_pose.y = 0.0f; target_pose.z = 0.15f;
+          target_pose.x = 0.18f; target_pose.y = 0.0f; target_pose.z = 0.22f;
           target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
           Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.0f, 50.0f, 2000);
           break;
         case 1:
-          target_pose.x = 0.15f; target_pose.y = 0.10f; target_pose.z = 0.20f;
+          target_pose.x = 0.15f; target_pose.y = 0.10f; target_pose.z = 0.23f;
           target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
           Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.5f, 80.0f, 2000);
           break;
         case 2:
-          target_pose.x = 0.25f; target_pose.y = -0.05f; target_pose.z = 0.10f;
+          target_pose.x = 0.20f; target_pose.y = -0.05f; target_pose.z = 0.24f;
           target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
           Trajectory_MoveToPose(&trajectory_controller, &target_pose, -0.3f, 20.0f, 2000);
           break;
         case 3: {
           JointAngles_t home;
-          home.q[0] = 0.0f; home.q[1] = 0.0f; home.q[2] = 0.0f; home.q[3] = 0.0f;
+          // Safer "up-forward" test home position (avoids tabletop collision)
+          home.q[0] = 0.0f; home.q[1] = 0.5f; home.q[2] = -0.5f; home.q[3] = 0.0f;
           Trajectory_MoveToJoints(&trajectory_controller, &home, 0.0f, 50.0f, 2000);
         } break;
       }
