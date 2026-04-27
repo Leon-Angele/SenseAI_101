@@ -88,7 +88,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -101,7 +101,6 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
@@ -140,7 +139,7 @@ int main(void)
 
   /* Move to home position (mid-range) */
   JointAngles_t home_angles;
-  home_angles.q[0] = 1.5f;   /* Shoulder lift */
+  home_angles.q[0] = 0.0f;   /* Shoulder lift */
   home_angles.q[1] = 0.0f;   /* Elbow */
   home_angles.q[2] = 0.0f;   /* Wrist pitch */
   home_angles.q[3] = 0.0f;   /* Wrist roll */
@@ -153,6 +152,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
     static uint32_t last_trajectory_update = 0;
     static uint32_t last_command_time = 0;
@@ -228,7 +228,7 @@ int main(void)
           break;
         case 3: {
           JointAngles_t home;
-          home.q[0] = 1.5f; home.q[1] = 0.0f; home.q[2] = 0.0f; home.q[3] = 0.0f;
+          home.q[0] = 0.0f; home.q[1] = 0.0f; home.q[2] = 0.0f; home.q[3] = 0.0f;
           Trajectory_MoveToJoints(&trajectory_controller, &home, 0.0f, 50.0f, 2000);
         } break;
       }
@@ -307,14 +307,14 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 1000000;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_HalfDuplex_Init(&huart1) != HAL_OK)
+  if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }

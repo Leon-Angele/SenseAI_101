@@ -14,7 +14,6 @@
 #define PI                      3.14159265358979f
 #define TWO_PI                  6.28318530717959f
 #define EPSILON                 1e-6f
-#define JACOBIAN_DELTA          1e-4f  // Finite difference step for Jacobian
 
 /* Private variables ---------------------------------------------------------*/
 static bool initialized = false;
@@ -25,9 +24,8 @@ static void RotationMatrix_X(float angle, float R[9]);
 static void RotationMatrix_Y(float angle, float R[9]);
 static void RotationMatrix_Z(float angle, float R[9]);
 static void ExtractEulerAngles(const float R[9], float *roll, float *pitch, float *yaw);
-static bool IK_Solve_LM(const CartesianPose_t *target, const JointAngles_t *q0, 
-                        const IK_Config_t *cfg, IK_Solution_t *sol);
-static void Jacobian_Numerical(const JointAngles_t *q, Jacobian_t *J);
+static void BuildTranslation(float tx, float ty, float tz, Mat4x4_t *T);
+static void BuildRotationY(float angle, Mat4x4_t *T);
 
 /* Public functions ----------------------------------------------------------*/
 
@@ -70,25 +68,44 @@ bool FK_ComputeMatrix(const JointAngles_t *q, Mat4x4_t *T)
         return false;
     }
     
-    Mat4x4_t T1, T2, T3, T4, T_temp, T_result;
+    /* Elementary Transform Sequence (ETS) for SO-101
+     * Chain: T = Tz(L1) * Ry(q1) * Tx(L2) * Ry(q2) * Tx(L3) * Ry(q3) * Tx(L4)
+     * 
+     * Joints:
+     *  q[0] = Shoulder Lift (Ry)
+     *  q[1] = Elbow Flex (Ry)
+     *  q[2] = Wrist Pitch (Ry)
+     *  q[3] = Wrist Roll (Rx) - not used in this 4-DOF position kinematics
+     */
     
-    // Build transformation for each joint using DH parameters
-    // Joint 1: Shoulder Lift (Ry)
-    Build_Transform(DH_J1_TX, DH_J1_TZ, q->q[0], 'y', &T1);
+    Mat4x4_t T_base, T_rot, T_trans, T_temp1, T_temp2;
     
-    // Joint 2: Elbow Flex (Ry)
-    Build_Transform(DH_J2_TX, DH_J2_TZ, q->q[1], 'y', &T2);
+    // Start with base translation: Tz(L1_BASE_HEIGHT)
+    BuildTranslation(0.0f, 0.0f, L1_BASE_HEIGHT, &T_base);
     
-    // Joint 3: Wrist Pitch (Ry)
-    Build_Transform(DH_J3_TX, DH_J3_TZ, q->q[2], 'y', &T3);
+    // Apply shoulder lift: Ry(q1)
+    BuildRotationY(q->q[0], &T_rot);
+    Mat4x4_Multiply(&T_base, &T_rot, &T_temp1);
     
-    // Joint 4: Wrist Roll (Rx)
-    Build_Transform(DH_J4_TX, DH_J4_TZ, q->q[3], 'x', &T4);
+    // Apply upper arm translation: Tx(L2_UPPER_ARM)
+    BuildTranslation(L2_UPPER_ARM, 0.0f, 0.0f, &T_trans);
+    Mat4x4_Multiply(&T_temp1, &T_trans, &T_temp2);
     
-    // Chain transformations: T = T1 * T2 * T3 * T4
-    Mat4x4_Multiply(&T1, &T2, &T_temp);
-    Mat4x4_Multiply(&T_temp, &T3, &T_result);
-    Mat4x4_Multiply(&T_result, &T4, T);
+    // Apply elbow flex: Ry(q2)
+    BuildRotationY(q->q[1], &T_rot);
+    Mat4x4_Multiply(&T_temp2, &T_rot, &T_temp1);
+    
+    // Apply forearm translation: Tx(L3_FOREARM)
+    BuildTranslation(L3_FOREARM, 0.0f, 0.0f, &T_trans);
+    Mat4x4_Multiply(&T_temp1, &T_trans, &T_temp2);
+    
+    // Apply wrist pitch: Ry(q3)
+    BuildRotationY(q->q[2], &T_rot);
+    Mat4x4_Multiply(&T_temp2, &T_rot, &T_temp1);
+    
+    // Apply wrist to TCP translation: Tx(L4_WRIST_TCP)
+    BuildTranslation(L4_WRIST_TCP, 0.0f, 0.0f, &T_trans);
+    Mat4x4_Multiply(&T_temp1, &T_trans, T);
     
     return true;
 }
@@ -105,43 +122,142 @@ bool IK_Compute(const CartesianPose_t *target_pose,
         return false;
     }
     
-    // Use default config if not provided
-    IK_Config_t cfg;
-    if (config == NULL) {
-        IK_GetDefaultConfig(&cfg);
-    } else {
-        cfg = *config;
-    }
-    
     // Initialize solution
     memset(solution, 0, sizeof(IK_Solution_t));
+    solution->success = false;
+    solution->iterations = 1;  // Analytical IK is non-iterative
+    solution->searches = 1;
+    solution->residual = 0.0f;
     
-    // Use provided initial guess or default mid-range position
-    JointAngles_t q0;
-    if (q_init != NULL) {
-        q0 = *q_init;
-    } else {
-        // Default initial guess (mid-range for most joints)
-        q0.q[0] = 1.5f;   // Shoulder lift
-        q0.q[1] = 0.0f;   // Elbow
-        q0.q[2] = 0.0f;   // Wrist pitch
-        q0.q[3] = 0.0f;   // Wrist roll
+    // Use default config if not provided
+    bool enforce_limits = true;
+    if (config != NULL) {
+        enforce_limits = config->enforce_limits;
     }
     
-    // Solve using Levenberg-Marquardt
-    return IK_Solve_LM(target_pose, &q0, &cfg, solution);
-}
-
-/**
- * @brief Compute Jacobian matrix
- */
-bool Jacobian_Compute(const JointAngles_t *q, Jacobian_t *J)
-{
-    if (q == NULL || J == NULL) {
+    /* Analytical Inverse Kinematics using Geometric Approach
+     * 
+     * This is a closed-form solution for a 4-DOF arm with:
+     * - All revolute joints rotating about Y-axis (pitch joints)
+     * - Serial chain: Base -> Shoulder -> Elbow -> Wrist -> TCP
+     * 
+     * Strategy:
+     * 1. Wrist decoupling: Calculate wrist position from target and pitch
+     * 2. 2D projection: Reduce to planar 2-link problem (shoulder + elbow)
+     * 3. Law of cosines: Solve for elbow angle
+     * 4. Trigonometry: Solve for shoulder angle
+     * 5. Pitch preservation: Calculate wrist angle to maintain end-effector orientation
+     */
+    
+    float x = target_pose->x;
+    float y = target_pose->y;
+    float z = target_pose->z;
+    float target_pitch = target_pose->pitch;
+    
+    // Joint angles
+    float q0, q1, q2, q3;
+    
+    // Step 1: Calculate base rotation (not used in 4-DOF IK, set to 0)
+    // Note: Base pan is handled separately in trajectory planning
+    // For now, we work in the 2D plane defined by the target
+    
+    // Step 2: Project to 2D (calculate radial distance in XY plane)
+    float r_xy = sqrtf(x*x + y*y);
+    
+    // If target is directly above/below (r_xy ≈ 0), set base angle to 0
+    // In practice, trajectory planner should handle base rotation separately
+    
+    // Step 3: Wrist decoupling
+    // Calculate wrist position by subtracting wrist-to-TCP offset
+    // Wrist offset depends on target pitch angle
+#ifdef USE_CMSIS_DSP
+    float cos_pitch = arm_cos_f32(target_pitch);
+    float sin_pitch = arm_sin_f32(target_pitch);
+#else
+    float cos_pitch = cosf(target_pitch);
+    float sin_pitch = sinf(target_pitch);
+#endif
+    
+    float r_wrist = r_xy - L4_WRIST_TCP * cos_pitch;
+    float z_wrist = z - L4_WRIST_TCP * sin_pitch - L1_BASE_HEIGHT;
+    
+    // Step 4: Check reachability
+    // Distance from shoulder to wrist in 2D
+    float d = sqrtf(r_wrist*r_wrist + z_wrist*z_wrist);
+    
+    float reach_max = L2_UPPER_ARM + L3_FOREARM;
+    float reach_min = fabsf(L2_UPPER_ARM - L3_FOREARM);
+    
+    if (d > reach_max + EPSILON || d < reach_min - EPSILON) {
+        // Target is unreachable
+        solution->success = false;
+        solution->residual = (d > reach_max) ? (d - reach_max) : (reach_min - d);
         return false;
     }
     
-    Jacobian_Numerical(q, J);
+    // Clamp d to valid range (handle numerical errors)
+    if (d > reach_max) d = reach_max;
+    if (d < reach_min) d = reach_min;
+    
+    // Step 5: Solve for elbow angle using law of cosines
+    // cos(q2) = (d² - L2² - L3²) / (2 * L2 * L3)
+    float cos_q2 = (d*d - L2_UPPER_ARM*L2_UPPER_ARM - L3_FOREARM*L3_FOREARM) 
+                   / (2.0f * L2_UPPER_ARM * L3_FOREARM);
+    
+    // Clamp to valid range [-1, 1] to handle numerical errors
+    if (cos_q2 > 1.0f) cos_q2 = 1.0f;
+    if (cos_q2 < -1.0f) cos_q2 = -1.0f;
+    
+    // Elbow-up configuration (positive angle)
+#ifdef USE_CMSIS_DSP
+    q2 = acosf(cos_q2);  // No CMSIS-DSP acos, use standard
+#else
+    q2 = acosf(cos_q2);
+#endif
+    
+    // Step 6: Solve for shoulder angle
+    // q1 = atan2(z_wrist, r_wrist) - atan2(L3*sin(q2), L2 + L3*cos(q2))
+#ifdef USE_CMSIS_DSP
+    float sin_q2 = arm_sin_f32(q2);
+    cos_q2 = arm_cos_f32(q2);  // Recompute for consistency
+#else
+    float sin_q2 = sinf(q2);
+    cos_q2 = cosf(q2);
+#endif
+    
+    float alpha = atan2f(z_wrist, r_wrist);
+    float beta = atan2f(L3_FOREARM * sin_q2, L2_UPPER_ARM + L3_FOREARM * cos_q2);
+    
+    q1 = alpha - beta;
+    
+    // Step 7: Solve for wrist pitch to maintain end-effector orientation
+    // target_pitch = q1 + q2 + q3
+    // Therefore: q3 = target_pitch - q1 - q2
+    q3 = target_pitch - q1 - q2;
+    
+    // Step 8: Normalize angles to [-π, π]
+    q1 = Kinematics_NormalizeAngle(q1);
+    q2 = Kinematics_NormalizeAngle(q2);
+    q3 = Kinematics_NormalizeAngle(q3);
+    
+    // Step 9: Store solution
+    solution->q.q[0] = q1;  // Shoulder lift
+    solution->q.q[1] = q2;  // Elbow flex
+    solution->q.q[2] = q3;  // Wrist pitch
+    solution->q.q[3] = 0.0f;  // Wrist roll (not used in position IK)
+    
+    // Step 10: Check joint limits
+    if (enforce_limits) {
+        if (!Kinematics_CheckJointLimits(&solution->q)) {
+            solution->success = false;
+            return false;
+        }
+    }
+    
+    // Success!
+    solution->success = true;
+    solution->residual = 0.0f;  // Analytical solution has zero error
+    
     return true;
 }
 
@@ -218,68 +334,60 @@ void IK_GetDefaultConfig(IK_Config_t *config)
         return;
     }
     
-    config->max_iterations = IK_MAX_ITERATIONS;
-    config->max_searches = IK_MAX_SEARCHES;
-    config->tolerance = IK_TOLERANCE;
-    config->lambda = IK_DAMPING_LAMBDA;
-    config->enforce_limits = true;
-}
-
-/**
- * @brief Compute manipulability
- */
-float Kinematics_Manipulability(const Jacobian_t *J)
-{
-    if (J == NULL) {
-        return 0.0f;
-    }
-    
-    // For simplicity, return a placeholder
-    // Full implementation would compute sqrt(det(J * J^T))
-    return 1.0f;
+    // Note: These parameters are deprecated for analytical IK
+    // They are kept for API compatibility only
+    config->max_iterations = 1;      // Not used (analytical IK is non-iterative)
+    config->max_searches = 1;        // Not used
+    config->tolerance = 0.0f;        // Not used (analytical IK has zero error)
+    config->lambda = 0.0f;           // Not used (no damping needed)
+    config->enforce_limits = true;   // Still used
 }
 
 /* Internal helper functions -------------------------------------------------*/
 
 /**
- * @brief Build transformation matrix from DH parameters
+ * @brief Build translation matrix
  */
-void Build_Transform(float tx, float tz, float theta, char axis, Mat4x4_t *T)
+static void BuildTranslation(float tx, float ty, float tz, Mat4x4_t *T)
 {
     if (T == NULL) {
         return;
     }
     
     SetIdentityMatrix(T);
+    T->data[12] = tx;
+    T->data[13] = ty;
+    T->data[14] = tz;
+}
+
+/**
+ * @brief Build rotation matrix around Y axis
+ */
+static void BuildRotationY(float angle, Mat4x4_t *T)
+{
+    if (T == NULL) {
+        return;
+    }
     
     /* Use CMSIS-DSP trig functions when enabled for FPU-optimized math */
 #ifdef USE_CMSIS_DSP
-    float c = arm_cos_f32(theta);
-    float s = arm_sin_f32(theta);
+    float c = arm_cos_f32(angle);
+    float s = arm_sin_f32(angle);
 #else
-    float c = cosf(theta);
-    float s = sinf(theta);
+    float c = cosf(angle);
+    float s = sinf(angle);
 #endif
     
-    if (axis == 'y') {
-        // Rotation around Y axis
-        // R = [c  0  s]
-        //     [0  1  0]
-        //     [-s 0  c]
-        T->data[0] = c;   T->data[4] = 0.0f; T->data[8]  = s;    T->data[12] = tx;
-        T->data[1] = 0.0f; T->data[5] = 1.0f; T->data[9]  = 0.0f; T->data[13] = 0.0f;
-        T->data[2] = -s;  T->data[6] = 0.0f; T->data[10] = c;    T->data[14] = tz;
-        T->data[3] = 0.0f; T->data[7] = 0.0f; T->data[11] = 0.0f; T->data[15] = 1.0f;
-    } else if (axis == 'x') {
-        // Rotation around X axis
-        // R = [1  0   0]
-        //     [0  c  -s]
-        //     [0  s   c]
-        T->data[0] = 1.0f; T->data[4] = 0.0f; T->data[8]  = 0.0f; T->data[12] = tx;
-        T->data[1] = 0.0f; T->data[5] = c;    T->data[9]  = -s;   T->data[13] = 0.0f;
-        T->data[2] = 0.0f; T->data[6] = s;    T->data[10] = c;    T->data[14] = tz;
-        T->data[3] = 0.0f; T->data[7] = 0.0f; T->data[11] = 0.0f; T->data[15] = 1.0f;
-    }
+    SetIdentityMatrix(T);
+    
+    // Rotation around Y axis
+    // R = [ c  0  s]
+    //     [ 0  1  0]
+    //     [-s  0  c]
+    T->data[0] = c;
+    T->data[2] = -s;
+    T->data[8] = s;
+    T->data[10] = c;
 }
 
 /**
@@ -392,130 +500,6 @@ void Compute_AngleAxisError(const Mat4x4_t *T_current,
     error[3] = 0.0f;  // Roll error (not controlled in 4-DOF)
     error[4] = 0.0f;  // Pitch error
     error[5] = 0.0f;  // Yaw error
-}
-
-/**
- * @brief IK solver using Levenberg-Marquardt
- */
-static bool IK_Solve_LM(const CartesianPose_t *target, const JointAngles_t *q0, 
-                        const IK_Config_t *cfg, IK_Solution_t *sol)
-{
-    JointAngles_t q_current = *q0;
-    Mat4x4_t T_target, T_current;
-    float error[6];
-    Jacobian_t J;
-    
-    // Build target transformation matrix
-    Pose_ToMat4x4(target, &T_target);
-    
-    sol->searches = 0;
-    sol->iterations = 0;
-    
-    // Main search loop
-    for (uint8_t search = 0; search < cfg->max_searches; search++) {
-        sol->searches = search + 1;
-        
-        // Iteration loop
-        for (uint8_t iter = 0; iter < cfg->max_iterations; iter++) {
-            sol->iterations++;
-            
-            // Compute current end-effector pose
-            FK_ComputeMatrix(&q_current, &T_current);
-            
-            // Compute error
-            Compute_AngleAxisError(&T_current, &T_target, error);
-            
-            // Compute residual (position error only for 4-DOF)
-                    float residual_sq = error[0]*error[0] + error[1]*error[1] + error[2]*error[2];
-                    sol->residual = sqrtf(residual_sq);
-            
-            // Check convergence
-            if (sol->residual < cfg->tolerance) {
-                sol->success = true;
-                sol->q = q_current;
-                
-                // Normalize angles
-                for (uint8_t i = 0; i < IK_NUM_JOINTS; i++) {
-                    sol->q.q[i] = Kinematics_NormalizeAngle(sol->q.q[i]);
-                }
-                
-                // Check limits if enforced
-                if (cfg->enforce_limits && !Kinematics_CheckJointLimits(&sol->q)) {
-                    sol->success = false;
-                    break;
-                }
-                
-                return true;
-            }
-            
-            // Compute Jacobian
-            Jacobian_Numerical(&q_current, &J);
-            
-            // Compute update: dq = J^T * error (simplified, should use pseudoinverse)
-            // For now, use simple gradient descent with damping
-            for (uint8_t i = 0; i < IK_NUM_JOINTS; i++) {
-                float grad = 0.0f;
-                for (uint8_t j = 0; j < 3; j++) {  // Only position components
-                    grad += J.data[j * IK_NUM_JOINTS + i] * error[j];
-                }
-                
-                float dq = grad * cfg->lambda;
-                
-                // Limit joint change per iteration
-                if (dq > IK_MAX_JOINT_DELTA) dq = IK_MAX_JOINT_DELTA;
-                if (dq < -IK_MAX_JOINT_DELTA) dq = -IK_MAX_JOINT_DELTA;
-                
-                q_current.q[i] += dq;
-            }
-            
-            // Clamp to limits during iteration
-            if (cfg->enforce_limits) {
-                Kinematics_ClampJointLimits(&q_current);
-            }
-        }
-        
-        // If not converged, try random restart
-            if (search < cfg->max_searches - 1) {
-            q_current.q[0] = ((float)rand() / RAND_MAX) * 3.34159f - 0.2f;
-            q_current.q[1] = ((float)rand() / RAND_MAX) * 3.0f - 1.5f;
-            q_current.q[2] = ((float)rand() / RAND_MAX) * 6.28318f - 3.14159f;
-            q_current.q[3] = ((float)rand() / RAND_MAX) * 6.28318f - 3.14159f;
-        }
-    }
-    
-    sol->success = false;
-    sol->q = q_current;
-    return false;
-}
-
-/**
- * @brief Compute Jacobian using numerical differentiation
- */
-static void Jacobian_Numerical(const JointAngles_t *q, Jacobian_t *J)
-{
-    CartesianPose_t pose_base, pose_perturbed;
-    JointAngles_t q_perturbed;
-    
-    // Get base pose
-    FK_Compute(q, &pose_base);
-    
-    // Compute numerical derivatives for each joint
-    for (uint8_t i = 0; i < IK_NUM_JOINTS; i++) {
-        q_perturbed = *q;
-        q_perturbed.q[i] += JACOBIAN_DELTA;
-        
-        FK_Compute(&q_perturbed, &pose_perturbed);
-        
-        // J[0-2, i] = d(position) / dq[i]
-        J->data[0 * IK_NUM_JOINTS + i] = (pose_perturbed.x - pose_base.x) / JACOBIAN_DELTA;
-        J->data[1 * IK_NUM_JOINTS + i] = (pose_perturbed.y - pose_base.y) / JACOBIAN_DELTA;
-        J->data[2 * IK_NUM_JOINTS + i] = (pose_perturbed.z - pose_base.z) / JACOBIAN_DELTA;
-        
-        // J[3-5, i] = d(orientation) / dq[i] (simplified for 4-DOF)
-        J->data[3 * IK_NUM_JOINTS + i] = 0.0f;
-        J->data[4 * IK_NUM_JOINTS + i] = 0.0f;
-        J->data[5 * IK_NUM_JOINTS + i] = 0.0f;
-    }
 }
 
 /* Private helper functions --------------------------------------------------*/

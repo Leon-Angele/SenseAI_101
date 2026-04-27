@@ -44,7 +44,7 @@ TrajectoryStatus_t Trajectory_Init(TrajectoryController_t *controller,
     controller->initialized = true;
     
     // Initialize to safe mid-range position
-    controller->interpolator.q_current.q[0] = 1.5f;
+    controller->interpolator.q_current.q[0] = 0.0f;
     controller->interpolator.q_current.q[1] = 0.0f;
     controller->interpolator.q_current.q[2] = 0.0f;
     controller->interpolator.q_current.q[3] = 0.0f;
@@ -208,12 +208,11 @@ TrajectoryStatus_t Trajectory_Update(TrajectoryController_t *controller)
                 if (Trajectory_PopCommand(controller, &cmd)) {
                     
                     if (cmd.type == CMD_TYPE_CARTESIAN_POSE) {
-                        // Need to compute IK
-                        controller->state = TRAJ_STATE_COMPUTING_IK;
+                        // Compute IK synchronously (analytical IK is fast, no separate state needed)
                         TrajectoryStatus_t status = Trajectory_ComputeIK(controller, &cmd.cartesian_cmd.pose);
                         
                         if (status == TRAJ_OK && controller->last_ik_solution.success) {
-                            // IK succeeded, start interpolation
+                            // IK succeeded, prepare joint command and start interpolation
                             MotionCommand_t joint_cmd;
                             joint_cmd.type = CMD_TYPE_JOINT_ANGLES;
                             joint_cmd.joint_cmd.angles = controller->last_ik_solution.q;
@@ -224,22 +223,18 @@ TrajectoryStatus_t Trajectory_Update(TrajectoryController_t *controller)
                             Trajectory_StartInterpolation(controller, &joint_cmd);
                             controller->state = TRAJ_STATE_INTERPOLATING;
                         } else {
-                            // IK failed, go back to idle
-                            controller->state = TRAJ_STATE_ERROR;
-                            return TRAJ_ERROR_IK_FAILED;
+                            // IK failed - target unreachable
+                            // Stay in IDLE, command is discarded
+                            // Optional: Log error or increment error counter
+                            controller->state = TRAJ_STATE_IDLE;
                         }
                     } else {
-                        // Direct joint command or gripper, start interpolation
+                        // Direct joint command or gripper, start interpolation immediately
                         Trajectory_StartInterpolation(controller, &cmd);
                         controller->state = TRAJ_STATE_INTERPOLATING;
                     }
                 }
             }
-            break;
-            
-        case TRAJ_STATE_COMPUTING_IK:
-            // IK computation (handled in IDLE state above)
-            // This state is transient
             break;
             
         case TRAJ_STATE_INTERPOLATING:

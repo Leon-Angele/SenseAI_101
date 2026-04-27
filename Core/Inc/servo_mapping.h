@@ -8,9 +8,9 @@
  * Maps between joint angles (radians) and servo positions (0-4095)
  * Handles calibration offsets, drive modes, and angle inversions
  *
- * Calibration data from: so101/calibration.json
- * - homing_offset: [2030, 3023, -1049, -2058, -2057, -2452]
- * - drive_mode: [1, 1, 0, 0, 0, 0] (1=inverted direction)
+ * Calibration data from: MinMax Range of Motion_Servos.json
+ * - homing_offset: [-1716, -567, 913, -2010, 741, -1639]
+ * - drive_mode: [0, 0, 0, 0, 0, 0] (all normal direction)
  * - Angle inversions for joints [0, 1, 4] as per feetech_arm.py
  *
  ******************************************************************************
@@ -65,6 +65,8 @@ typedef struct {
     uint8_t drive_mode;     // 0=normal, 1=inverted
     int16_t start_pos;      // Start position for calibration
     int16_t end_pos;        // End position for calibration
+    uint16_t range_min;     // Minimum safe servo position
+    uint16_t range_max;     // Maximum safe servo position
     CalibMode_t calib_mode; // Degree or linear mode
 } ServoCalib_t;
 
@@ -161,10 +163,11 @@ float ServoMapping_GetGripperPercent(uint16_t position);
 
 /**
  * @brief Clamp servo position to valid range
+ * @param servo_idx Servo index (0-5)
  * @param position Input position
- * @retval Clamped position (0-4095)
+ * @retval Clamped position (clamped to servo's range_min-range_max)
  */
-uint16_t ServoMapping_ClampPosition(int32_t position);
+uint16_t ServoMapping_ClampPosition(uint8_t servo_idx, int32_t position);
 
 #ifdef __cplusplus
 }

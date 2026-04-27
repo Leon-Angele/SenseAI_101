@@ -5,16 +5,22 @@
  ******************************************************************************
  * @attention
  *
- * Denavit-Hartenberg based kinematics for SO-101 6-DOF arm
- * Uses CMSIS-DSP for matrix operations and FPU optimization
+ * Analytical kinematics for SO-101 4-DOF arm using Elementary Transform
+ * Sequence (ETS) for forward kinematics and closed-form geometric solution
+ * for inverse kinematics (law of cosines + wrist decoupling).
+ * 
+ * Uses CMSIS-DSP for matrix operations and FPU optimization when available.
  *
  * Joint Configuration:
- * - Joint 0: Shoulder Pan (Rotation) - Not used in 4-DOF IK
- * - Joint 1: Shoulder Lift (Pitch)
- * - Joint 2: Elbow Flex
- * - Joint 3: Wrist Pitch
- * - Joint 4: Wrist Roll - Not used in position IK (orientation only)
+ * - Joint 0: Base Pan (Rotation) - Handled separately in trajectory planning
+ * - Joint 1: Shoulder Lift (Pitch) - q[0] in IK
+ * - Joint 2: Elbow Flex (Pitch) - q[1] in IK
+ * - Joint 3: Wrist Pitch - q[2] in IK
+ * - Joint 4: Wrist Roll - q[3] in IK (not used in position IK)
  * - Joint 5: Gripper - Not used in arm IK
+ *
+ * Reference Pose (q = 0 for all joints):
+ * - Arm extended horizontally forward
  *
  ******************************************************************************
  */
@@ -44,22 +50,12 @@ extern "C" {
 /* Total number of arm joints (excluding gripper) */
 #define ARM_NUM_JOINTS          5
 
-/* DH Parameters for SO-101 (in meters) - from robot.py */
-/* Joint 1 (Shoulder Lift): tx=0.02943, tz=0.05504, Ry */
-#define DH_J1_TX                0.02943f
-#define DH_J1_TZ                0.05504f
-
-/* Joint 2 (Elbow Flex): tx=0.1127, tz=-0.02798, Ry */
-#define DH_J2_TX                0.1127f
-#define DH_J2_TZ                -0.02798f
-
-/* Joint 3 (Wrist Pitch): tx=0.13504, tz=0.00519, Ry */
-#define DH_J3_TX                0.13504f
-#define DH_J3_TZ                0.00519f
-
-/* Joint 4 (Wrist Roll): tx=0.0593, tz=0.00996, Rx */
-#define DH_J4_TX                0.0593f
-#define DH_J4_TZ                0.00996f
+/* Link Lengths for SO-101 (in meters) - Elementary Transform Sequence */
+/* Measured from physical robot and approximated from DH parameters */
+#define L1_BASE_HEIGHT          0.055f      // Base to shoulder pitch axis
+#define L2_UPPER_ARM            0.116f      // Shoulder to elbow
+#define L3_FOREARM              0.135f      // Elbow to wrist pitch
+#define L4_WRIST_TCP            0.060f      // Wrist pitch to tool center point
 
 /* Joint Limits (in radians) - from robot.py qlim */
 #define JOINT_LIMIT_MIN_1       -0.2f       // Shoulder Lift
@@ -70,13 +66,6 @@ extern "C" {
 #define JOINT_LIMIT_MAX_3       3.14159f
 #define JOINT_LIMIT_MIN_4       -3.14159f   // Wrist Roll
 #define JOINT_LIMIT_MAX_4       3.14159f
-
-/* IK Solver Parameters */
-#define IK_MAX_ITERATIONS       10          // Max iterations per attempt
-#define IK_MAX_SEARCHES         2           // Max random restarts
-#define IK_TOLERANCE            1e-3f       // Convergence tolerance (meters)
-#define IK_DAMPING_LAMBDA       0.01f       // LM damping factor
-#define IK_MAX_JOINT_DELTA      0.1f        // Max joint change per iteration (rad)
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -114,13 +103,6 @@ typedef struct {
 } CartesianPose_t;
 
 /**
- * @brief 6xN Jacobian matrix
- */
-typedef struct {
-    float data[6 * IK_NUM_JOINTS];  // 6 rows x 4 columns
-} Jacobian_t;
-
-/**
  * @brief IK solution result
  */
 typedef struct {
@@ -132,14 +114,16 @@ typedef struct {
 } IK_Solution_t;
 
 /**
- * @brief IK solver configuration
+ * @brief IK solver configuration (deprecated, kept for API compatibility)
+ * @note Analytical IK does not use iterations or tolerances.
+ *       The enforce_limits flag is still respected.
  */
 typedef struct {
-    uint8_t max_iterations; // Max iterations per search
-    uint8_t max_searches;   // Max search attempts
-    float tolerance;    // Convergence tolerance
-    float lambda;       // Damping factor for LM
-    bool enforce_limits;    // Enforce joint limits
+    uint8_t max_iterations; // Deprecated (not used in analytical IK)
+    uint8_t max_searches;   // Deprecated (not used in analytical IK)
+    float tolerance;        // Deprecated (not used in analytical IK)
+    float lambda;           // Deprecated (not used in analytical IK)
+    bool enforce_limits;    // Enforce joint limits (still used)
 } IK_Config_t;
 
 /* Exported functions --------------------------------------------------------*/
@@ -168,23 +152,15 @@ bool FK_ComputeMatrix(const JointAngles_t *q, Mat4x4_t *T);
 /**
  * @brief Compute inverse kinematics (Cartesian pose -> joint angles)
  * @param target_pose Desired end-effector pose
- * @param q_init Initial joint guess (can be current position)
- * @param config IK solver configuration (NULL for defaults)
+ * @param q_init Initial joint guess (deprecated, not used in analytical IK)
+ * @param config IK solver configuration (NULL for defaults, only enforce_limits is used)
  * @param solution Output IK solution
- * @retval true if IK converged
+ * @retval true if IK succeeded (target reachable)
  */
 bool IK_Compute(const CartesianPose_t *target_pose, 
                 const JointAngles_t *q_init,
                 const IK_Config_t *config,
                 IK_Solution_t *solution);
-
-/**
- * @brief Compute Jacobian matrix at given joint configuration
- * @param q Joint angles (4-DOF)
- * @param J Output Jacobian matrix (6x4)
- * @retval true if successful
- */
-bool Jacobian_Compute(const JointAngles_t *q, Jacobian_t *J);
 
 /**
  * @brief Check if joint angles are within limits
@@ -212,24 +188,7 @@ float Kinematics_NormalizeAngle(float angle);
  */
 void IK_GetDefaultConfig(IK_Config_t *config);
 
-/**
- * @brief Compute manipulability measure
- * @param J Jacobian matrix
- * @retval Manipulability index (higher is better)
- */
-float Kinematics_Manipulability(const Jacobian_t *J);
-
 /* Internal helper functions (exposed for testing) ---------------------------*/
-
-/**
- * @brief Build homogeneous transformation matrix from DH parameters
- * @param tx Translation along X
- * @param tz Translation along Z
- * @param theta Rotation angle (radians)
- * @param axis Rotation axis ('x' or 'y')
- * @param T Output transformation matrix
- */
-void Build_Transform(float tx, float tz, float theta, char axis, Mat4x4_t *T);
 
 /**
  * @brief Multiply two 4x4 matrices: C = A * B

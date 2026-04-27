@@ -18,7 +18,8 @@ static ServoProtocol_t *g_protocol = NULL;  // Global reference for callbacks
 /* Private function prototypes -----------------------------------------------*/
 static ServoStatus_t Servo_SendPacket(ServoProtocol_t *protocol, 
                                        const SCS_Packet_t *packet, 
-                                       uint8_t param_count);
+                                       uint8_t param_count,
+                                       uint8_t expected_rx_length);
 static ServoStatus_t Servo_WaitResponse(ServoProtocol_t *protocol, 
                                          uint8_t expected_length);
 static void Servo_BuildPacket(SCS_Packet_t *packet, uint8_t id, 
@@ -79,13 +80,10 @@ ServoStatus_t Servo_Ping(ServoProtocol_t *protocol, uint8_t id)
        This function is non-blocking: it starts the transfer and returns.
        The caller should check protocol->state or use Servo_Process() and
        inspect protocol->rx_buffer when protocol->state == SERVO_STATE_RX_COMPLETE. */
-    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 0);
+    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 0, 6);
     if (status != SERVO_OK) {
         return status;
     }
-
-    /* Expect 6 bytes response: Header(2) + ID + Length + Error + Checksum */
-    protocol->rx_expected_length = 6;
     return SERVO_OK;
 }
 
@@ -123,7 +121,7 @@ ServoStatus_t Servo_WritePosition(ServoProtocol_t *protocol, uint8_t id,
     SCS_Packet_t packet;
     Servo_BuildPacket(&packet, id, SCS_WRITE, params, 5);
     
-    return Servo_SendPacket(protocol, &packet, 5);
+    return Servo_SendPacket(protocol, &packet, 5, 0);
 }
 
 /**
@@ -151,7 +149,7 @@ ServoStatus_t Servo_ReadPosition(ServoProtocol_t *protocol, uint8_t id, uint16_t
     SCS_Packet_t packet;
     Servo_BuildPacket(&packet, id, SCS_READ, params, 2);
     
-    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 2);
+    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 2, 8);
     if (status != SERVO_OK) {
         return status;
     }
@@ -227,7 +225,7 @@ ServoStatus_t Servo_SyncWritePosition(ServoProtocol_t *protocol,
     packet.checksum = checksum;
     
     // Send packet (no response expected for sync write)
-    return Servo_SendPacket(protocol, &packet, param_idx);
+    return Servo_SendPacket(protocol, &packet, param_idx, 0);
 }
 
 /**
@@ -267,7 +265,7 @@ ServoStatus_t Servo_Write(ServoProtocol_t *protocol, uint8_t id,
     SCS_Packet_t packet;
     Servo_BuildPacket(&packet, id, SCS_WRITE, params, length + 1);
     
-    return Servo_SendPacket(protocol, &packet, length + 1);
+    return Servo_SendPacket(protocol, &packet, length + 1, 0);
 }
 
 /**
@@ -295,13 +293,13 @@ ServoStatus_t Servo_Read(ServoProtocol_t *protocol, uint8_t id,
     SCS_Packet_t packet;
     Servo_BuildPacket(&packet, id, SCS_READ, params, 2);
     
-    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 2);
+    uint8_t expected_length = 6 + length;  // Header(2) + ID + Length + Error + Data + Checksum
+    ServoStatus_t status = Servo_SendPacket(protocol, &packet, 2, expected_length);
     if (status != SERVO_OK) {
         return status;
     }
     
     // Wait for response
-    uint8_t expected_length = 6 + length;  // Header(2) + ID + Length + Error + Data + Checksum
     status = Servo_WaitResponse(protocol, expected_length);
     if (status != SERVO_OK) {
         return status;
@@ -340,21 +338,16 @@ void Servo_TxCpltCallback(ServoProtocol_t *protocol)
     if (protocol == NULL) {
         return;
     }
-    
-    // Transmission complete, ready to receive or go idle
-    if (protocol->rx_expected_length > 0) {
-        protocol->state = SERVO_STATE_RX_BUSY;
-        // Start DMA receive
-        HAL_UART_Receive_DMA(protocol->huart, protocol->rx_buffer, protocol->rx_expected_length);
-        /* If DE pin configured, disable transmitter (set LOW) once switching to RX */
-        if (protocol->de_enabled && protocol->de_gpio != NULL) {
-            HAL_GPIO_WritePin(protocol->de_gpio, protocol->de_pin, GPIO_PIN_RESET);
-        }
-    } else {
+    /* If DE pin configured, disable transmitter (set LOW) once TX is done */
+    if (protocol->de_enabled && protocol->de_gpio != NULL) {
+        HAL_GPIO_WritePin(protocol->de_gpio, protocol->de_pin, GPIO_PIN_RESET);
+    }
+
+    // If we do not expect a response, become IDLE. If a response is expected,
+    // the state was already set to SERVO_STATE_RX_BUSY when sending and the
+    // RX DMA was started before TX; leave it as-is.
+    if (protocol->rx_expected_length == 0) {
         protocol->state = SERVO_STATE_IDLE;
-        if (protocol->de_enabled && protocol->de_gpio != NULL) {
-            HAL_GPIO_WritePin(protocol->de_gpio, protocol->de_pin, GPIO_PIN_RESET);
-        }
     }
 }
 
@@ -418,44 +411,53 @@ static void Servo_BuildPacket(SCS_Packet_t *packet, uint8_t id,
  */
 static ServoStatus_t Servo_SendPacket(ServoProtocol_t *protocol, 
                                        const SCS_Packet_t *packet, 
-                                       uint8_t param_count)
+                                       uint8_t param_count,
+                                       uint8_t expected_rx_length)
 {
     if (protocol->state != SERVO_STATE_IDLE) {
         return SERVO_ERROR_BUSY;
     }
-    
+
     // Copy packet to TX buffer
     protocol->tx_buffer[0] = packet->header1;
     protocol->tx_buffer[1] = packet->header2;
     protocol->tx_buffer[2] = packet->id;
     protocol->tx_buffer[3] = packet->length;
     protocol->tx_buffer[4] = packet->instruction;
-    
+
     if (param_count > 0) {
         memcpy(&protocol->tx_buffer[5], packet->params, param_count);
     }
-    
+
     protocol->tx_buffer[5 + param_count] = packet->checksum;
     protocol->tx_length = 6 + param_count;
-    
+
     protocol->last_tx_time = HAL_GetTick();
-    protocol->state = SERVO_STATE_TX_BUSY;
-    
+    protocol->rx_expected_length = expected_rx_length; // store expected RX length
+
     /* If DE pin configured, enable transmitter (set HIGH) before sending */
     if (protocol->de_enabled && protocol->de_gpio != NULL) {
         HAL_GPIO_WritePin(protocol->de_gpio, protocol->de_pin, GPIO_PIN_SET);
     }
 
+    /* IMPORTANT: start RX DMA BEFORE starting TX DMA to avoid race */
+    if (expected_rx_length > 0) {
+        protocol->state = SERVO_STATE_RX_BUSY;
+        HAL_UART_Receive_DMA(protocol->huart, protocol->rx_buffer, expected_rx_length);
+    } else {
+        protocol->state = SERVO_STATE_TX_BUSY;
+    }
+
     /* Send via DMA */
-    HAL_StatusTypeDef hal_status = HAL_UART_Transmit_DMA(protocol->huart, 
-                                                           protocol->tx_buffer, 
+    HAL_StatusTypeDef hal_status = HAL_UART_Transmit_DMA(protocol->huart,
+                                                           protocol->tx_buffer,
                                                            protocol->tx_length);
-    
+
     if (hal_status != HAL_OK) {
         protocol->state = SERVO_STATE_IDLE;
         return SERVO_ERROR_HAL;
     }
-    
+
     return SERVO_OK;
 }
 

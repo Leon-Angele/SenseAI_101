@@ -18,59 +18,39 @@
 /* Private variables ---------------------------------------------------------*/
 
 /**
- * @brief Calibration data from calibration.json
+ * @brief Calibration data from MinMax Range of Motion_Servos.json
+ * 
+ * Updated for analytical kinematics with horizontal (q=0) as reference pose.
+ * Physical measurements for horizontal extended position (q1=0, q2=0, q3=0):
+ *   - Servo 2: 3100 (Shoulder Lift)
+ *   - Servo 3: 1000 (Elbow Flex)
+ *   - Servo 4: 2000 (Wrist Pitch)
+ * 
  * Order: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
  * Indices: [0, 1, 2, 3, 4, 5]
- */
+*/
 static const ServoCalib_t servo_calibration[NUM_SERVOS] = {
-    // Servo 0: Shoulder Pan (Base Rotation)
-    {
-        .homing_offset = 2030,
-        .drive_mode = 1,  // Inverted
-        .start_pos = 2003,
-        .end_pos = -1006,
-        .calib_mode = CALIB_MODE_DEGREE
-    },
-    // Servo 1: Shoulder Lift
-    {
-        .homing_offset = 3023,
-        .drive_mode = 1,  // Inverted
-        .start_pos = 3039,
-        .end_pos = -1999,
-        .calib_mode = CALIB_MODE_DEGREE
-    },
-    // Servo 2: Elbow Flex
-    {
-        .homing_offset = -1049,
-        .drive_mode = 0,  // Normal
-        .start_pos = 1040,
-        .end_pos = 2073,
-        .calib_mode = CALIB_MODE_DEGREE
-    },
-    // Servo 3: Wrist Flex
-    {
-        .homing_offset = -2058,
-        .drive_mode = 0,  // Normal
-        .start_pos = 1993,
-        .end_pos = 3082,
-        .calib_mode = CALIB_MODE_DEGREE
-    },
-    // Servo 4: Wrist Roll
-    {
-        .homing_offset = -2057,
-        .drive_mode = 0,  // Normal
-        .start_pos = 2047,
-        .end_pos = 3081,
-        .calib_mode = CALIB_MODE_DEGREE
-    },
-    // Servo 5: Gripper
-    {
-        .homing_offset = -2452,
-        .drive_mode = 0,  // Normal
-        .start_pos = 2048,
-        .end_pos = 3476,
-        .calib_mode = CALIB_MODE_LINEAR
-    }
+    // ID 1: Shoulder Pan (Base rotation, center: ~2250)
+    { .homing_offset = 250,  .range_min = 1100, .range_max = 3569, .calib_mode = CALIB_MODE_DEGREE },
+    
+    // ID 2: Shoulder Lift (Horizontal q1=0 → pos=3100)
+    // Calculation: 3100 = 2048 + 0 + offset → offset = 1052
+    // Note: Smaller servo value (e.g., 2100) = upward motion = positive math angle (after inversion)
+    { .homing_offset = 1052, .range_min = 871,  .range_max = 3341, .calib_mode = CALIB_MODE_DEGREE },
+    
+    // ID 3: Elbow Flex (Straight q2=0 → pos=1000)
+    // Calculation: 1000 = 2048 + 0 + offset → offset = -1048
+    { .homing_offset = -1048, .range_min = 815,  .range_max = 3024, .calib_mode = CALIB_MODE_DEGREE },
+    
+    // ID 4: Wrist Pitch (Horizontal q3=0 → pos=2000)
+    // Calculation: 2000 = 2048 + 0 + offset → offset = -48
+    { .homing_offset = -48,  .range_min = 774,  .range_max = 3141, .calib_mode = CALIB_MODE_DEGREE },
+    
+    // ID 5: Wrist Roll (Center, unchanged)
+    { .homing_offset = -1,   .range_min = 0,    .range_max = 4095, .calib_mode = CALIB_MODE_DEGREE },
+    
+    // ID 6: Gripper (Linear mode, offset ignored, uses start/end positions)
+    { .homing_offset = 0,    .start_pos = 1601, .end_pos = 3097, .range_min = 1601, .range_max = 3097, .calib_mode = CALIB_MODE_LINEAR }
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -133,7 +113,7 @@ uint16_t ServoMapping_RadToPosition(uint8_t servo_idx, float angle_rad)
     int32_t position = (int32_t)(SERVO_POS_CENTER + servo_units + calib->homing_offset);
     
     // Clamp to valid range
-    return ServoMapping_ClampPosition(position);
+    return ServoMapping_ClampPosition(servo_idx, position);
 }
 
 /**
@@ -274,7 +254,7 @@ uint16_t ServoMapping_SetGripperPercent(float percent)
     float range = (float)(calib->end_pos - calib->start_pos);
     int32_t position = calib->start_pos + (int32_t)((percent / 100.0f) * range);
     
-    return ServoMapping_ClampPosition(position);
+    return ServoMapping_ClampPosition(5, position);
 }
 
 /**
@@ -297,12 +277,25 @@ float ServoMapping_GetGripperPercent(uint16_t position)
 /**
  * @brief Clamp servo position to valid range
  */
-uint16_t ServoMapping_ClampPosition(int32_t position)
+uint16_t ServoMapping_ClampPosition(uint8_t servo_idx, int32_t position)
 {
-    if (position < SERVO_POS_MIN) {
-        return SERVO_POS_MIN;
-    } else if (position > SERVO_POS_MAX) {
-        return SERVO_POS_MAX;
+    if (servo_idx >= NUM_SERVOS) {
+        // Fallback to global range if invalid index
+        if (position < SERVO_POS_MIN) {
+            return SERVO_POS_MIN;
+        } else if (position > SERVO_POS_MAX) {
+            return SERVO_POS_MAX;
+        }
+        return (uint16_t)position;
+    }
+    
+    const ServoCalib_t *calib = &servo_calibration[servo_idx];
+    
+    // Clamp to servo-specific range
+    if (position < calib->range_min) {
+        return calib->range_min;
+    } else if (position > calib->range_max) {
+        return calib->range_max;
     }
     return (uint16_t)position;
 }
