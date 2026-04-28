@@ -112,7 +112,12 @@ TrajectoryStatus_t Trajectory_MoveToPose(TrajectoryController_t *controller,
     MotionCommand_t cmd;
     cmd.type = CMD_TYPE_CARTESIAN_POSE;
     cmd.cartesian_cmd.pose = *pose;
-    cmd.cartesian_cmd.base_rotation = base_rotation;
+    // AUTO-BASE: If caller passed base_rotation==0.0f, compute from X/Y when available
+    if (base_rotation == 0.0f && (fabsf(pose->x) > 0.001f || fabsf(pose->y) > 0.001f)) {
+        cmd.cartesian_cmd.base_rotation = atan2f(pose->y, pose->x);
+    } else {
+        cmd.cartesian_cmd.base_rotation = base_rotation;
+    }
     cmd.gripper_percent = gripper_percent;
     cmd.duration_ms = duration_ms;
     cmd.wait_for_completion = false;
@@ -488,16 +493,29 @@ static TrajectoryStatus_t Trajectory_ComputeIK(TrajectoryController_t *ctrl, con
     IK_GetDefaultConfig(&config);
     
     // Use current joint angles as initial guess
+    CartesianPose_t test_pose = *pose;
     bool success = IK_Compute(
-        pose,
+        &test_pose,
         &ctrl->interpolator.q_current,
         &config,
         &ctrl->last_ik_solution
     );
-    
+
+    // If initial attempt failed, search for a usable pitch angle
+    if (!success || !ctrl->last_ik_solution.success) {
+        // Try pitches from -90° to +45° in 0.1 rad steps
+        for (float p = -1.57f; p <= 0.8f; p += 0.1f) {
+            test_pose.pitch = p;
+            success = IK_Compute(&test_pose, &ctrl->interpolator.q_current, &config, &ctrl->last_ik_solution);
+            if (success && ctrl->last_ik_solution.success) {
+                break; // found a working pitch
+            }
+        }
+    }
+
     if (!success || !ctrl->last_ik_solution.success) {
         return TRAJ_ERROR_IK_FAILED;
     }
-    
+
     return TRAJ_OK;
 }

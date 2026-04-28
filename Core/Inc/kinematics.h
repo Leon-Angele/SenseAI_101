@@ -50,18 +50,21 @@ extern "C" {
 /* Total number of arm joints (excluding gripper) */
 #define ARM_NUM_JOINTS          5
 
-/* Link Lengths for SO-101 (in meters) - Elementary Transform Sequence */
+/* Link Lengths for SO-101 (in meters) */
 /* Measured from physical robot and approximated from DH parameters */
-#define L1_BASE_HEIGHT          0.055f      // Base to shoulder pitch axis
-#define L2_UPPER_ARM            0.116f      // Shoulder to elbow
+#define L1_BASE_HEIGHT          0.125f      // 55mm + 70mm vertical to joint 2
+#define L1_X_OFFSET             0.030f      // Horizontal offset from G1 to G2 (30 mm)
+#define L2_UPPER_ARM            0.116f      // Vertical distance G2 to G3
+/* Horizontal kink/offset of the upper arm relative to shoulder axis */
+#define L2_Z_OFFSET            -0.030f      // -30 mm offset at upper arm (kink)
 #define L3_FOREARM              0.135f      // Elbow to wrist pitch
-#define L4_WRIST_TCP            0.060f      // Wrist pitch to tool center point
+#define L4_WRIST_TCP            0.070f      // Wrist pitch to tool center point (70 mm)
 
 /* Joint Limits (in radians) - from robot.py qlim */
-#define JOINT_LIMIT_MIN_1       -0.2f       // Shoulder Lift
-#define JOINT_LIMIT_MAX_1       3.14159f
-#define JOINT_LIMIT_MIN_2       -1.5f       // Elbow Flex
-#define JOINT_LIMIT_MAX_2       1.5f
+#define JOINT_LIMIT_MIN_1       -2.5f       
+#define JOINT_LIMIT_MAX_1       2.0f
+#define JOINT_LIMIT_MIN_2       -2.8f       // Elbow Flex (allow large negative bend ~-155°) — expanded for Case 0
+#define JOINT_LIMIT_MAX_2       0.5f        // Elbow Flex (upper bound near 0.5 rad)
 #define JOINT_LIMIT_MIN_3       -3.14159f   // Wrist Pitch
 #define JOINT_LIMIT_MAX_3       3.14159f
 #define JOINT_LIMIT_MIN_4       -3.14159f   // Wrist Roll

@@ -39,9 +39,7 @@ extern "C" {
 #define SERVO_POS_MAX           4095
 #define SERVO_POS_CENTER        2048
 
-/* Degrees per servo unit (for degree-mode servos) */
-/* Full range: 0-4095 corresponds to ~360 degrees */
-#define SERVO_UNITS_PER_DEGREE  (4096.0f / 360.0f)  // ~11.377
+/* Per-servo units-per-degree moved into ServoCalib_t as `units_per_deg` */
 
 /* Linear servo scaling (for gripper) */
 #define SERVO_LINEAR_MIN_PERCENT    0.0f
@@ -63,6 +61,7 @@ typedef enum {
 typedef struct {
     int16_t homing_offset;  // Calibration offset (servo units)
     uint8_t drive_mode;     // 0=normal, 1=inverted
+    float units_per_deg;    // Units-per-degree for degree-mode servos (0.0f for linear/gripper)
     int16_t start_pos;      // Start position for calibration
     int16_t end_pos;        // End position for calibration
     uint16_t range_min;     // Minimum safe servo position

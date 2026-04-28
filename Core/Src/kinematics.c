@@ -80,26 +80,26 @@ bool FK_ComputeMatrix(const JointAngles_t *q, Mat4x4_t *T)
     
     Mat4x4_t T_base, T_rot, T_trans, T_temp1, T_temp2;
     
-    // Start with base translation: Tz(L1_BASE_HEIGHT)
-    BuildTranslation(0.0f, 0.0f, L1_BASE_HEIGHT, &T_base);
+    // Start with base translation: Tx(L1_X_OFFSET) * Tz(L1_BASE_HEIGHT)
+    BuildTranslation(L1_X_OFFSET, 0.0f, L1_BASE_HEIGHT, &T_base);
     
-    // Apply shoulder lift: Ry(q1)
-    BuildRotationY(q->q[0], &T_rot);
+    // Apply shoulder lift: Ry(q1). q=0 is UP, q>0 is FORWARD
+    BuildRotationY((PI/2.0f) - q->q[0], &T_rot);
     Mat4x4_Multiply(&T_base, &T_rot, &T_temp1);
     
-    // Apply upper arm translation: Tx(L2_UPPER_ARM)
-    BuildTranslation(L2_UPPER_ARM, 0.0f, 0.0f, &T_trans);
+    // Apply upper arm translation
+    BuildTranslation(L2_UPPER_ARM, 0.0f, L2_Z_OFFSET, &T_trans);
     Mat4x4_Multiply(&T_temp1, &T_trans, &T_temp2);
     
-    // Apply elbow flex: Ry(q2)
+    // Apply elbow flex: Negative q2 folds DOWN
     BuildRotationY(q->q[1], &T_rot);
     Mat4x4_Multiply(&T_temp2, &T_rot, &T_temp1);
     
-    // Apply forearm translation: Tx(L3_FOREARM)
+    // Apply forearm translation
     BuildTranslation(L3_FOREARM, 0.0f, 0.0f, &T_trans);
     Mat4x4_Multiply(&T_temp1, &T_trans, &T_temp2);
     
-    // Apply wrist pitch: Ry(q3)
+    // Apply wrist pitch: Maintain orientation logic
     BuildRotationY(q->q[2], &T_rot);
     Mat4x4_Multiply(&T_temp2, &T_rot, &T_temp1);
     
@@ -155,7 +155,7 @@ bool IK_Compute(const CartesianPose_t *target_pose,
     float target_pitch = target_pose->pitch;
     
     // Joint angles
-    float q0, q1, q2, q3;
+    float q1, q2, q3;
     
     // Step 1: Calculate base rotation (not used in 4-DOF IK, set to 0)
     // Note: Base pan is handled separately in trajectory planning
@@ -178,15 +178,22 @@ bool IK_Compute(const CartesianPose_t *target_pose,
     float sin_pitch = sinf(target_pitch);
 #endif
     
-    float r_wrist = r_xy - L4_WRIST_TCP * cos_pitch;
+    // R_wrist reduced by static base X-offset so arm can tilt backward when r_xy is small
+    float r_wrist = r_xy - L4_WRIST_TCP * cos_pitch - L1_X_OFFSET;
     float z_wrist = z - L4_WRIST_TCP * sin_pitch - L1_BASE_HEIGHT;
+
+    // Account for fixed Z-offset at upper arm when projecting to shoulder frame
+    // The vertical offset L2_Z_OFFSET is part of the static geometry
     
     // Step 4: Check reachability
     // Distance from shoulder to wrist in 2D
     float d = sqrtf(r_wrist*r_wrist + z_wrist*z_wrist);
-    
-    float reach_max = L2_UPPER_ARM + L3_FOREARM;
-    float reach_min = fabsf(L2_UPPER_ARM - L3_FOREARM);
+
+    // Effective upper-arm length accounting for vertical offset
+    float L2_eff = sqrtf(L2_UPPER_ARM * L2_UPPER_ARM + L2_Z_OFFSET * L2_Z_OFFSET);
+
+    float reach_max = L2_eff + L3_FOREARM;
+    float reach_min = fabsf(L2_eff - L3_FOREARM);
     
     if (d > reach_max + EPSILON || d < reach_min - EPSILON) {
         // Target is unreachable
@@ -200,40 +207,43 @@ bool IK_Compute(const CartesianPose_t *target_pose,
     if (d < reach_min) d = reach_min;
     
     // Step 5: Solve for elbow angle using law of cosines
-    // cos(q2) = (d² - L2² - L3²) / (2 * L2 * L3)
-    float cos_q2 = (d*d - L2_UPPER_ARM*L2_UPPER_ARM - L3_FOREARM*L3_FOREARM) 
-                   / (2.0f * L2_UPPER_ARM * L3_FOREARM);
+    float cos_gamma = (d*d - L2_eff*L2_eff - L3_FOREARM*L3_FOREARM) / (2.0f * L2_eff * L3_FOREARM);
+    if (cos_gamma > 1.0f) cos_gamma = 1.0f;
+    if (cos_gamma < -1.0f) cos_gamma = -1.0f;
     
-    // Clamp to valid range [-1, 1] to handle numerical errors
-    if (cos_q2 > 1.0f) cos_q2 = 1.0f;
-    if (cos_q2 < -1.0f) cos_q2 = -1.0f;
-    
-    // Elbow-up configuration (positive angle)
+    // Calculate positive geometric folding angle
 #ifdef USE_CMSIS_DSP
-    q2 = acosf(cos_q2);  // No CMSIS-DSP acos, use standard
+    float gamma_eff = acosf(cos_gamma);
 #else
-    q2 = acosf(cos_q2);
+    float gamma_eff = acosf(cos_gamma);
 #endif
     
     // Step 6: Solve for shoulder angle
-    // q1 = atan2(z_wrist, r_wrist) - atan2(L3*sin(q2), L2 + L3*cos(q2))
 #ifdef USE_CMSIS_DSP
-    float sin_q2 = arm_sin_f32(q2);
-    cos_q2 = arm_cos_f32(q2);  // Recompute for consistency
+    float sin_gamma = arm_sin_f32(gamma_eff);
+    float cos_gamma_val = arm_cos_f32(gamma_eff);
 #else
-    float sin_q2 = sinf(q2);
-    cos_q2 = cosf(q2);
+    float sin_gamma = sinf(gamma_eff);
+    float cos_gamma_val = cosf(gamma_eff);
 #endif
     
     float alpha = atan2f(z_wrist, r_wrist);
-    float beta = atan2f(L3_FOREARM * sin_q2, L2_UPPER_ARM + L3_FOREARM * cos_q2);
+    float beta = atan2f(L3_FOREARM * sin_gamma, L2_eff + L3_FOREARM * cos_gamma_val);
+    float offset_angle = atan2f(L2_Z_OFFSET, L2_UPPER_ARM);
     
-    q1 = alpha - beta;
+    // Absolute angle of upper arm from X-axis
+    float theta1 = alpha + beta - offset_angle;
+    
+    // Map to joint angles based on physical convention
+    // q1: 0 = Vertical, Positive = Forward
+    q1 = (PI/2.0f) - theta1;
+    
+    // q2: 0 = Straight, Negative = Fold Down/Inward
+    // CRITICAL FIX: Das Vorzeichen des Offsets muss positiv sein!
+    q2 = -gamma_eff + offset_angle;
     
     // Step 7: Solve for wrist pitch to maintain end-effector orientation
-    // target_pitch = q1 + q2 + q3
-    // Therefore: q3 = target_pitch - q1 - q2
-    q3 = target_pitch - q1 - q2;
+    q3 = target_pitch - theta1 - q2;
     
     // Step 8: Normalize angles to [-π, π]
     q1 = Kinematics_NormalizeAngle(q1);

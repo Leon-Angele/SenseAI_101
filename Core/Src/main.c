@@ -155,9 +155,14 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     static uint32_t last_trajectory_update = 0;
-    static uint32_t last_command_time = 0;
+    static uint32_t last_command_time = 0; // initialized to 0; set below on first loop
     static uint8_t command_sequence = 0;
     static uint32_t led_counter = 0;
+
+    /* Initialize last_command_time on first loop to allow immediate commands */
+    if (last_command_time == 0) {
+      last_command_time = HAL_GetTick() - 3000;
+    }
 
     /* Process servo protocol and update trajectory at configured frequency */
     if (HAL_GetTick() - last_trajectory_update >= TRAJECTORY_PERIOD_MS) {
@@ -207,29 +212,39 @@ int main(void)
     }
 
     /* Periodic example command sequence */
-    if (Trajectory_IsIdle(&trajectory_controller) && HAL_GetTick() - last_command_time >= 3000) {
+    if (Trajectory_IsIdle(&trajectory_controller) && HAL_GetTick() - last_command_time >= 2000) {
       last_command_time = HAL_GetTick();
       CartesianPose_t target_pose;
       switch (command_sequence) {
         case 0:
-          target_pose.x = 0.18f; target_pose.y = 0.0f; target_pose.z = 0.22f;
-          target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
-          Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.0f, 50.0f, 2000);
-          break;
+            // Ziel: 45° Rotation, Maximale Reichweite
+            target_pose.x = 0.22f; 
+            target_pose.y = 0.22f; // X = Y erzwingt 45° über atan2(y,x)
+            target_pose.z = 0.2f; 
+            
+            target_pose.pitch = 0.0f; 
+            target_pose.roll = 0.0f;
+            
+            // Die 0.0f hier wird durch die Auto-Base Logik in trajectory.c überschrieben
+            Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.0f, 50.0f, 2000);
+            break;
         case 1:
-          target_pose.x = 0.15f; target_pose.y = 0.10f; target_pose.z = 0.23f;
+          // Normal working position — base rotation computed automatically from X/Y
+          target_pose.x = 0.15f; target_pose.y = 0.10f; target_pose.z = 0.25f;
           target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
-          Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.5f, 80.0f, 2000);
+          Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.0f, 80.0f, 2000);
           break;
         case 2:
-          target_pose.x = 0.20f; target_pose.y = -0.05f; target_pose.z = 0.24f;
+          // Fully extended test
+          target_pose.x = 0.25f; target_pose.y = 0.0f; target_pose.z = 0.30f;
           target_pose.roll = 0.0f; target_pose.pitch = 0.0f; target_pose.yaw = 0.0f;
-          Trajectory_MoveToPose(&trajectory_controller, &target_pose, -0.3f, 20.0f, 2000);
+          Trajectory_MoveToPose(&trajectory_controller, &target_pose, 0.0f, 20.0f, 2000);
           break;
         case 3: {
+          break; // For testing skip homing 
           JointAngles_t home;
-          // Safer "up-forward" test home position (avoids tabletop collision)
-          home.q[0] = 0.0f; home.q[1] = 0.5f; home.q[2] = -0.5f; home.q[3] = 0.0f;
+          // Home: all joints vertical (q=0)
+          home.q[0] = 0.0f; home.q[1] = 0.0f; home.q[2] = 0.0f; home.q[3] = 0.0f;
           Trajectory_MoveToJoints(&trajectory_controller, &home, 0.0f, 50.0f, 2000);
         } break;
       }

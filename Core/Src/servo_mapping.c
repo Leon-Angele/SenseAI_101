@@ -31,25 +31,27 @@
 */
 static const ServoCalib_t servo_calibration[NUM_SERVOS] = {
     // ID 1: Shoulder Pan (Base rotation, center: ~2250)
-    { .homing_offset = 250,  .range_min = 1100, .range_max = 3569, .calib_mode = CALIB_MODE_DEGREE },
+    { .homing_offset = 250,  .drive_mode = 0, .range_min = 1100, .range_max = 3569, .calib_mode = CALIB_MODE_DEGREE, .units_per_deg = 18.06f },
     
-    // ID 2: Shoulder Lift (Horizontal q1=0 -> pos=1200)
-    // Calculation: 1200 = 2048 + (-848)
-    { .homing_offset = -848, .range_min = 871,  .range_max = 3341, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
-    
+    // ID 2: Shoulder Lift (Vertical q1=0 -> pos=2100)
+    // Calculation: 2100 = 2048 + 52
+    // Use normal drive mode: positive angle -> increases servo value (towards 3100)
+    { .homing_offset = 52, .drive_mode = 0, .range_min = 871,  .range_max = 3341, .calib_mode = CALIB_MODE_DEGREE, .units_per_deg = 11.377f },
+
     // ID 3: Elbow Flex (Straight q2=0 -> pos=1000)
     // Calculation: 1000 = 2048 + (-1048)
-    { .homing_offset = -1048, .range_min = 815,  .range_max = 3024, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
+    // Drive direction changed mechanically; mark as inverted
+    { .homing_offset = -1048, .drive_mode = 1, .range_min = 815,  .range_max = 3024, .calib_mode = CALIB_MODE_DEGREE, .units_per_deg = 11.377f },
     
     // ID 4: Wrist Pitch (Straight q3=0 -> pos=2000)
     // Calculation: 2000 = 2048 + (-48)
-    { .homing_offset = -48,  .range_min = 774,  .range_max = 3141, .calib_mode = CALIB_MODE_DEGREE, .drive_mode = 0 },
+    { .homing_offset = -48,  .drive_mode = 1, .range_min = 774,  .range_max = 3141, .calib_mode = CALIB_MODE_DEGREE, .units_per_deg = 11.377f },
     
     // ID 5: Wrist Roll (Center, unchanged)
-    { .homing_offset = -1,   .range_min = 0,    .range_max = 4095, .calib_mode = CALIB_MODE_DEGREE },
+    { .homing_offset = -1,   .drive_mode = 0, .range_min = 0,    .range_max = 4095, .calib_mode = CALIB_MODE_DEGREE, .units_per_deg = 11.377f },
     
     // ID 6: Gripper (Linear mode, offset ignored, uses start/end positions)
-    { .homing_offset = 0,    .start_pos = 1601, .end_pos = 3097, .range_min = 1601, .range_max = 3097, .calib_mode = CALIB_MODE_LINEAR }
+    { .homing_offset = 0,    .drive_mode = 0, .start_pos = 1601, .end_pos = 3097, .range_min = 1601, .range_max = 3097, .calib_mode = CALIB_MODE_LINEAR, .units_per_deg = 0.0f }
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,7 +108,7 @@ uint16_t ServoMapping_RadToPosition(uint8_t servo_idx, float angle_rad)
     
     // Convert degrees to servo units
     // Center position (0 degrees) is at SERVO_POS_CENTER
-    float servo_units = angle_deg * SERVO_UNITS_PER_DEGREE;
+    float servo_units = angle_deg * calib->units_per_deg;
     
     // Add calibration offset and center position
     int32_t position = (int32_t)(SERVO_POS_CENTER + servo_units + calib->homing_offset);
@@ -136,7 +138,7 @@ float ServoMapping_PositionToRad(uint8_t servo_idx, uint16_t position)
     int32_t servo_units = (int32_t)position - SERVO_POS_CENTER - calib->homing_offset;
     
     // Convert servo units to degrees
-    float angle_deg = (float)servo_units / SERVO_UNITS_PER_DEGREE;
+    float angle_deg = (float)servo_units / calib->units_per_deg;
     
     // Apply drive mode inversion if needed
     if (calib->drive_mode == 1) {
