@@ -75,6 +75,7 @@ void Error_Handler(void);
 #define SPI_CS_GPIO_Port GPIOB
 #define SPI_HANDSHAKE_Pin GPIO_PIN_5
 #define SPI_HANDSHAKE_GPIO_Port GPIOB
+#define SPI_HANDSHAKE_EXTI_IRQn EXTI9_5_IRQn
 
 /* USER CODE BEGIN Private defines */
 

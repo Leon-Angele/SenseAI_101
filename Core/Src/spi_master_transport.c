@@ -1,7 +1,7 @@
 #include "spi_master_transport.h"
 #include <string.h>
 
-extern SPI_HandleTypeDef hspi2; // Von CubeMX in main.c generiert
+extern SPI_HandleTypeDef hspi2;
 
 static uint8_t compute_checksum(const uint8_t *buf, size_t len)
 {
@@ -27,7 +27,7 @@ HAL_StatusTypeDef SPI_Master_SendState(const float *obs, uint8_t seq)
     // CS Low (Aktiv)
     HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET);
     
-    // Transmit (Blockierend für kurze Payload ausreichend performant)
+    // Transmit
     HAL_StatusTypeDef res = HAL_SPI_Transmit(&hspi2, tx_frame.raw, SPI_STATE_FRAME_SIZE, 10);
     
     // CS High (Inaktiv)
@@ -36,19 +36,8 @@ HAL_StatusTypeDef SPI_Master_SendState(const float *obs, uint8_t seq)
     return res;
 }
 
-HAL_StatusTypeDef SPI_Master_GetAction(float *action, uint8_t expected_seq, uint32_t timeout_ms)
+HAL_StatusTypeDef SPI_Master_FetchAction(float *action, uint8_t expected_seq)
 {
-    uint32_t start_tick = HAL_GetTick();
-    
-    // Warten bis ESP32 Handshake (GPIO5) auf HIGH zieht
-    while (HAL_GPIO_ReadPin(SPI_HANDSHAKE_GPIO_Port, SPI_HANDSHAKE_Pin) == GPIO_PIN_RESET) {
-        if ((HAL_GetTick() - start_tick) > timeout_ms) {
-            return HAL_TIMEOUT;
-        }
-    }
-
-    // Dummy TX-Buffer senden, um den Takt für MISO zu erzeugen. 
-    // Erstes Byte ist das Kommando, falls der Slave den Input decodiert.
     uint8_t dummy_tx[SPI_ACTION_FRAME_SIZE] = {0};
     dummy_tx[0] = SPI_CMD_ACTION_REQ;
 
@@ -57,7 +46,7 @@ HAL_StatusTypeDef SPI_Master_GetAction(float *action, uint8_t expected_seq, uint
     // CS Low
     HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET);
 
-    // Vollduplex-Transfer: Master taktet, Slave schiebt s_tx_buf raus
+    // Vollduplex-Transfer
     HAL_StatusTypeDef res = HAL_SPI_TransmitReceive(&hspi2, dummy_tx, rx_frame.raw, SPI_ACTION_FRAME_SIZE, 10);
 
     // CS High
@@ -73,7 +62,7 @@ HAL_StatusTypeDef SPI_Master_GetAction(float *action, uint8_t expected_seq, uint
     // Validierung: Checksum
     uint8_t expected_cs = compute_checksum(rx_frame.raw, offsetof(spi_action_frame_t, fields.checksum));
     if (rx_frame.fields.checksum != expected_cs) {
-        return HAL_ERROR; // Checksummenfehler
+        return HAL_ERROR; 
     }
 
     // Nutzdaten kopieren

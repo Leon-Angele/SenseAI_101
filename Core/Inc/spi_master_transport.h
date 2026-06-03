@@ -53,7 +53,7 @@ typedef union {
 // Sendet die Observationen an den ESP32 und triggert die Inferenz
 HAL_StatusTypeDef SPI_Master_SendState(const float *obs, uint8_t seq);
 
-// Blockiert bis Handshake HIGH, taktet dann die Action-Werte heraus
-HAL_StatusTypeDef SPI_Master_GetAction(float *action, uint8_t expected_seq, uint32_t timeout_ms);
+// Holt synchron und ohne Wartezeit die Action. Darf nur nach dem Interrupt aufgerufen werden.
+HAL_StatusTypeDef SPI_Master_FetchAction(float *action, uint8_t expected_seq);
 
 #endif // SPI_MASTER_TRANSPORT_H
