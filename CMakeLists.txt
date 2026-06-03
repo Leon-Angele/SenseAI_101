@@ -69,6 +69,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/servo_protocol.c
     Core/Src/servo_mapping.c
     Core/Src/trajectory.c
+    Core/Src/spi_master_transport.c
 )
 
 # Add include paths
